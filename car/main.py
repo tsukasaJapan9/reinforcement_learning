@@ -9,6 +9,16 @@ import pybullet_data
 import lidar
 
 
+def set_camera(_racecar):
+    focus_pos, _ = p.getBasePositionAndOrientation(_racecar)
+    p.resetDebugVisualizerCamera(
+        cameraDistance=3,
+        cameraYaw=-90,
+        cameraPitch=-70,
+        cameraTargetPosition=focus_pos,
+    )
+
+
 JOINT_TYPE = {
     p.JOINT_REVOLUTE: "revolute",
     p.JOINT_PRISMATIC: "prismatic",
@@ -28,7 +38,8 @@ p.setAdditionalSearchPath(pybullet_data.getDataPath())
 
 plane = p.loadURDF("plane.urdf")
 racecar = p.loadURDF("racecar/racecar.urdf")
-p.loadURDF("cube.urdf", [2, 2, 0.5])
+# p.loadURDF("cube.urdf", [2, 2, 0.5])
+simple_map = p.loadURDF("car/simple_map.urdf")
 
 p.setGravity(0, 0, -9.8)
 
@@ -68,6 +79,8 @@ while True:
     dx = np.sqrt((pos[0] - posPrev[0])**2 + (pos[1] - posPrev[1])**2)
     v = dx / time_step
     # print(pos, v)
+
+    set_camera(racecar)
 
     time.sleep(time_step)
     t += time_step
