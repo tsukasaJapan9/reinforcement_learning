@@ -200,10 +200,20 @@ hokuyoJoint = 8
 # -------------------------------------
 physicsClient = p.connect(p.GUI)
 p.setAdditionalSearchPath(pybullet_data.getDataPath())
+ini_pos = [0, 0, random.uniform(-1.047, 1.047)]
 
 plane = p.loadURDF("plane.urdf")
-racecar = p.loadURDF("racecar/racecar.urdf")
-simple_map = p.loadURDF("car/simple_map.urdf")
+racecar = p.loadURDF(
+    "racecar/racecar.urdf",
+    baseOrientation=ini_pos,
+    flags=p.URDF_USE_SELF_COLLISION
+)
+simple_map = p.loadURDF(
+    "car/simple_map.urdf",
+    basePosition=[0.5, 3.4, 0.2],
+    useFixedBase=True,
+    flags=p.URDF_USE_SELF_COLLISION
+)
 
 p.setGravity(0, 0, -9.8)
 
@@ -346,7 +356,7 @@ while True:
 
                 experience.append(step_dict)
 
-                
+
                 
 
     # step_interval += time_step
