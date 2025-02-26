@@ -19,6 +19,63 @@ from torch import optim, device, cuda
 
 import lidar
 
+# -------------------------------------
+# ジョイントの設定など
+# -------------------------------------
+JOINT_TYPE = {
+    p.JOINT_REVOLUTE: "revolute",
+    p.JOINT_PRISMATIC: "prismatic",
+    p.JOINT_SPHERICAL: "spherical",
+    p.JOINT_PLANAR: "planar",
+    p.JOINT_FIXED: "fixed",
+    p.JOINT_POINT2POINT: "point2point",
+    p.JOINT_GEAR: "gear",
+}
+
+streer_links = [4, 6]
+wheel_links = [2, 3, 5, 7]
+hokuyoJoint = 8
+
+# -------------------------------------
+# GUI設定
+# -------------------------------------
+GUI = True
+if GUI:
+    p.connect(p.GUI)
+else:
+    p.connect(p.DIRECT)
+
+# -------------------------------------
+# 環境構築
+# -------------------------------------
+p.setAdditionalSearchPath(pybullet_data.getDataPath())
+p.setGravity(0, 0, -9.8)
+plane = p.loadURDF("plane.urdf")
+
+ini_pos = [0, 0, random.uniform(-math.radians(180), math.radians(180))]
+ini_pos = p.getQuaternionFromEuler(ini_pos)
+
+racecar = p.loadURDF(
+    "racecar/racecar.urdf",
+    baseOrientation=ini_pos,
+    flags=p.URDF_USE_SELF_COLLISION
+)
+simple_map = p.loadURDF(
+    "car/simple_map.urdf",
+    basePosition=[0.5, 3.4, 0.2],
+    useFixedBase=True,
+    flags=p.URDF_USE_SELF_COLLISION
+)
+
+print("--------------------")
+for i in range(p.getNumJoints(racecar)):
+    j = p.getJointInfo(racecar, i)
+    print(f"Joint {i}: {j[1]} ({JOINT_TYPE[j[2]]})")
+print("--------------------")
+
+# -------------------------------------
+# 車の制御方法
+# -------------------------------------
 steer_list = [
     -math.radians(90), 
     -math.radians(45),
@@ -38,11 +95,14 @@ velocuty_list = [
 ACTION_LIST = [
     (s, v) for s in steer_list for v in velocuty_list
 ]
-NUM_ACTIONS = len(ACTION_LIST)
-NUM_HIDDEN_NODES_1 = 64
-NUM_HIDDEN_NODES_2 = 32
-NUM_STATE = lidar.ray_num + 1
-lr = 0.001
+
+# -------------------------------------
+# LiDARの設定
+# -------------------------------------
+hokuyo_joint = 8
+lidar.set(racecar, hokuyoJoint)
+detection_interval = 0
+distances = []
 
 # -------------------------------------
 # 車の動作用関数
@@ -75,19 +135,49 @@ def control_velocity(_racecar, _wheel_links, _velocity):
         )
 
 # -------------------------------------
+# ネットワーク
+# -------------------------------------
+NUM_ACTIONS = len(ACTION_LIST)
+NUM_HIDDEN_NODES_1 = 64
+NUM_HIDDEN_NODES_2 = 32
+NUM_STATE = lidar.ray_num + 1
+lr = 0.001
+
+class NeuralNetwork(nn.Module):
+    def __init__(self, dim_in, dim_out):
+        super().__init__()
+        self.seq = nn.Sequential(
+            nn.Linear(dim_in, NUM_HIDDEN_NODES_1),
+            nn.ReLU(),
+            nn.Linear(NUM_HIDDEN_NODES_1, NUM_HIDDEN_NODES_2),
+            nn.ReLU(),
+            nn.Linear(NUM_HIDDEN_NODES_2, NUM_HIDDEN_NODES_2),
+            nn.ReLU(),
+            nn.Linear(NUM_HIDDEN_NODES_2, dim_out),
+        )
+
+    def forward(self, x):
+        return F.softmax(self.seq(x), dim=0)
+
+
+my_device = device("cuda" if cuda.is_available() else "cpu")
+print(f"Using {my_device} device")
+
+create_model = False
+weight_file_name = "model_weight.pth"
+weight_file = os.path.isfile(weight_file_name)
+if create_model or not weight_file:
+    model = NeuralNetwork(NUM_STATE, NUM_ACTIONS).to(my_device)
+else:
+    model = torch.load(weight_file_name).to(my_device)
+
+optimaizer = optim.Adam(model.parameters(), lr=lr)
+
+# -------------------------------------
 # 方策のアップデートと行動選択
 # -------------------------------------
-def update_policy(rewards, policies, steps, opt):
-    reward_ave = (rewards.numsum(dim=1)/steps).mean()
-    clampped = torch.clamp(policies, 1e-10, 1)
-    Jmt = clampped.log()*(rewards - reward_ave)
-    J = (Jmt.numsum(dim=1)/steps).mean()
-    J.backward()
-    opt.step()
-    opt.zero_grad()
-
 steer_step = 90
-def decide_actioon(output):
+def decide_action(output):
     prop = output.detach().numpy()
     one_hot = torch.zeros([NUM_ACTIONS])
 
@@ -101,6 +191,15 @@ def decide_actioon(output):
     action["vel"] = np.round(vel, decimals=2)
 
     return action, one_hot
+
+def update_policy(rewards, policies, steps, opt):
+    reward_ave = (rewards.numsum(dim=1)/steps).mean()
+    clampped = torch.clamp(policies, 1e-10, 1)
+    Jmt = clampped.log()*(rewards - reward_ave)
+    J = (Jmt.numsum(dim=1)/steps).mean()
+    J.backward()
+    opt.step()
+    opt.zero_grad()
 
 def set_reward(distance, rv, angle_vel):
     frontside = []
@@ -161,89 +260,88 @@ def end_episode(agent):
 # -------------------------------------
 # ネットワークの定義
 # -------------------------------------
-class NeuralNetwork(nn.Module):
-    def __init__(self, dim_in, dim_out):
-        super().__init__()
-        self.seq = nn.Sequential(
-            nn.Linear(dim_in, NUM_HIDDEN_NODES_1),
-            nn.ReLU(),
-            nn.Linear(NUM_HIDDEN_NODES_1, NUM_HIDDEN_NODES_2),
-            nn.ReLU(),
-            nn.Linear(NUM_HIDDEN_NODES_2, NUM_HIDDEN_NODES_2),
-            nn.ReLU(),
-            nn.Linear(NUM_HIDDEN_NODES_2, dim_out),
-        )
+# class NeuralNetwork(nn.Module):
+#     def __init__(self, dim_in, dim_out):
+#         super().__init__()
+#         self.seq = nn.Sequential(
+#             nn.Linear(dim_in, NUM_HIDDEN_NODES_1),
+#             nn.ReLU(),
+#             nn.Linear(NUM_HIDDEN_NODES_1, NUM_HIDDEN_NODES_2),
+#             nn.ReLU(),
+#             nn.Linear(NUM_HIDDEN_NODES_2, NUM_HIDDEN_NODES_2),
+#             nn.ReLU(),
+#             nn.Linear(NUM_HIDDEN_NODES_2, dim_out),
+#         )
 
-    def forward(self, x):
-        return F.softmax(self.seq(x), dim=0)
+#     def forward(self, x):
+#         return F.softmax(self.seq(x), dim=0)
 
-# -------------------------------------
-# ジョイントの設定など
-# -------------------------------------
-JOINT_TYPE = {
-    p.JOINT_REVOLUTE: "revolute",
-    p.JOINT_PRISMATIC: "prismatic",
-    p.JOINT_SPHERICAL: "spherical",
-    p.JOINT_PLANAR: "planar",
-    p.JOINT_FIXED: "fixed",
-    p.JOINT_POINT2POINT: "point2point",
-    p.JOINT_GEAR: "gear",
-}
+# # -------------------------------------
+# # ジョイントの設定など
+# # -------------------------------------
+# JOINT_TYPE = {
+#     p.JOINT_REVOLUTE: "revolute",
+#     p.JOINT_PRISMATIC: "prismatic",
+#     p.JOINT_SPHERICAL: "spherical",
+#     p.JOINT_PLANAR: "planar",
+#     p.JOINT_FIXED: "fixed",
+#     p.JOINT_POINT2POINT: "point2point",
+#     p.JOINT_GEAR: "gear",
+# }
 
-streer_links = [4, 6]
-wheel_links = [2, 3, 5, 7]
-hokuyoJoint = 8
-
+# streer_links = [4, 6]
+# wheel_links = [2, 3, 5, 7]
+# hokuyoJoint = 8
 
 # -------------------------------------
 # 環境構築
 # -------------------------------------
-physicsClient = p.connect(p.GUI)
-p.setAdditionalSearchPath(pybullet_data.getDataPath())
-ini_pos = [0, 0, random.uniform(-1.047, 1.047)]
+# physicsClient = p.connect(p.GUI)
+# p.setAdditionalSearchPath(pybullet_data.getDataPath())
+# ini_pos = [0, 0, random.uniform(-1.047, 1.047)]
 
-plane = p.loadURDF("plane.urdf")
-racecar = p.loadURDF(
-    "racecar/racecar.urdf",
-    baseOrientation=ini_pos,
-    flags=p.URDF_USE_SELF_COLLISION
-)
-simple_map = p.loadURDF(
-    "car/simple_map.urdf",
-    basePosition=[0.5, 3.4, 0.2],
-    useFixedBase=True,
-    flags=p.URDF_USE_SELF_COLLISION
-)
+# plane = p.loadURDF("plane.urdf")
+# racecar = p.loadURDF(
+#     "racecar/racecar.urdf",
+#     baseOrientation=ini_pos,
+#     flags=p.URDF_USE_SELF_COLLISION
+# )
+# simple_map = p.loadURDF(
+#     "car/simple_map.urdf",
+#     basePosition=[0.5, 3.4, 0.2],
+#     useFixedBase=True,
+#     flags=p.URDF_USE_SELF_COLLISION
+# )
 
-p.setGravity(0, 0, -9.8)
+# p.setGravity(0, 0, -9.8)
 
-print("--------------------")
-for i in range(p.getNumJoints(racecar)):
-    j = p.getJointInfo(racecar, i)
-    print(f"Joint {i}: {j[1]} ({JOINT_TYPE[j[2]]})")
-print("--------------------")
+# print("--------------------")
+# for i in range(p.getNumJoints(racecar)):
+#     j = p.getJointInfo(racecar, i)
+#     print(f"Joint {i}: {j[1]} ({JOINT_TYPE[j[2]]})")
+# print("--------------------")
 
 
 # -------------------------------------
 # センサの設定
 # -------------------------------------
-lidar.set(racecar, hokuyoJoint)
+# lidar.set(racecar, hokuyoJoint)
 
 # -------------------------------------
 # 学習準備
 # -------------------------------------
-my_device = device("cuda" if cuda.is_available() else "cpu")
-print(f"Using {my_device} device")
+# my_device = device("cuda" if cuda.is_available() else "cpu")
+# print(f"Using {my_device} device")
 
-create_model = False
-weight_file_name = "model_weight.pth"
-weight_file = os.path.isfile(weight_file_name)
-if create_model or not weight_file:
-    model = NeuralNetwork(NUM_STATE, NUM_ACTIONS).to(my_device)
-else:
-    model = torch.load(weight_file_name).to(my_device)
+# create_model = False
+# weight_file_name = "model_weight.pth"
+# weight_file = os.path.isfile(weight_file_name)
+# if create_model or not weight_file:
+#     model = NeuralNetwork(NUM_STATE, NUM_ACTIONS).to(my_device)
+# else:
+#     model = torch.load(weight_file_name).to(my_device)
 
-optimaizer = optim.Adam(model.parameters(), lr=lr)
+# optimaizer = optim.Adam(model.parameters(), lr=lr)
 
 # -------------------------------------
 # 強化学習の設定
@@ -288,6 +386,7 @@ record_reward = []
 # for wheel in wheel_links:
 #     p.setJointMotorControl2(racecar, wheel, p.VELOCITY_CONTROL, targetVelocity=targetVelocity)
 
+# 車の初期位置を取得
 pos, _ = p.getBasePositionAndOrientation(racecar)
 
 while True:
