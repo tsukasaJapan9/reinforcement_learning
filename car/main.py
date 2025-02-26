@@ -181,7 +181,7 @@ def decide_action(output):
     prop = output.detach().numpy()
     one_hot = torch.zeros([NUM_ACTIONS])
 
-    action = np.random.choise(range(NUM_ACTIONS), p=prop)
+    action = np.random.choice(range(NUM_ACTIONS), p=prop)
     one_hot[action] = 1
 
     steer, vel = ACTION_LIST[action]
@@ -206,7 +206,7 @@ def set_reward(distance, rv, angle_vel):
     for i in range(int(len(distance)/4)):
         frontside.append(distance[i+int(len(distance)/4)])
     leftside, rightside = [], []
-    for i in range(int(distance/2)):
+    for i in range(int(len(distance)/2)):
         leftside.append(distance[i])
         rightside.append(distance[i+int(len(distance)/2)])
     
@@ -393,32 +393,49 @@ while True:
     p.stepSimulation()
 
     t += time_step
+
+    # 学習時はsleepをコメントアウト
+    time.sleep(time_step)
+
+    set_camera(racecar)
+
+    step_interval += time_step
+
+    # 0.1秒ごとに学習
     if step_interval >= 0.1:
         if epoch < epochs:
             if episode < episodes:
+                # 車の速度を取得
                 pos_prev = pos
                 pos, _ = p.getBasePositionAndOrientation(racecar)
                 dx = np.sqrt(
                     (pos[0] - pos_prev[0])**2 + (pos[1] - pos_prev[1])**2
                 )
 
+                # ネットワークへの入力を準備する
+                # LiDARの距離
                 distances = lidar.detection(racecar, hokuyoJoint)
                 distances = [np.round(d, decimals=2) for d in distances]
+                # 車の速度
                 v = np.round(dx / update_step, decimals=2)
 
-                distances = torch.tensor(distances).float()
-                v = torch.tensor(np.array([v])).float()
+                # テンソルに変換
+                distances_tr = torch.tensor(distances).float().to(my_device)
+                v_tr = torch.tensor(np.array([v])).float().to(my_device)
 
-                input = torch.cat([distances, v])
+                input = torch.cat([distances_tr, v_tr])
 
                 # 行動を決定する
                 output = model(input)
-                action, one_hot = decide_actioon(output)
+                output = output.cpu()
+                action, one_hot = decide_action(output)
 
+                # タイヤの回転速度を取得
                 _, rv, _, _ = [
-                    np.round(n, decimals=2) for n in p.getJointState(racecar)
+                    np.round(n, decimals=2) for n in p.getJointState(racecar, 2)
                 ]
 
+                # 角速度を取得
                 qua = p.getBasePositionAndOrientation(racecar)[1]
                 euler_z = p.getEulerFromQuaternion(qua)[2]
                 angle_vel = euler_z / update_step
@@ -453,7 +470,7 @@ while True:
                 step_dict["action"] = action
                 step_dict["one_hot"] = one_hot
 
-                experience.append(step_dict)
+                experiences.append(step_dict)
 
                 policy_list[step] = step_dict["output"] @ step_dict["one_hot"]
                 reward_list[step] = step_dict["reward"]
