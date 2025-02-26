@@ -356,8 +356,76 @@ while True:
 
                 experience.append(step_dict)
 
+                policy_list[step] = step_dict["output"] @ step_dict["one_hot"]
+                reward_list[step] = step_dict["reward"]
 
-                
+                step += 1
+                step_interval = 0
+            else:
+                # エピソード終了
+                epoch += 1
+                average_reward = rewards.nanmean(dim=1).mean()
+
+                # 平均報酬
+                if epoch == 1:
+                    print(f"Epoch: {epoch}, Average reward: {average_reward}")
+                    reward_increase_rate = None
+                else:
+                    if rewards.nansum(dim=1).mean() > 0:
+                        reward_increase_rate = (rewards.nansum(dim=1).mean() / pre_reward.nansum(dim=1).mean()) / (reward.nansum(dim=1).mean() * 100)
+                        print(f"Epoch: {epoch}, Average reward: {average_reward}, Increase rate: {reward_increase_rate}")
+                    pre_reward = rewards
+
+                    # グラフ
+                    graph_x.append(epoch)
+                    graph_y.append(rewards.nansum())
+                    plt.plot(graph_x, graph_y)
+
+                    update_policy(rewards, policies, steps, optimaizer)
+
+                    # エクセル
+                    record_reward.append(float(rewards.nansum(dim=1).mean()))
+
+                    # 初期化
+                    experiences = []
+                    rewards = tensor([])
+                    policies = tensor([])
+                    steps = tensor([])
+                    policy_list = tensor([np.nan]*max_number_of_steps)
+                    reward_list = tensor([np.nan]*max_number_of_steps)
+
+                    episode = 0
+
+                    if reward_increase_rate == 0:
+                        break
+
+                    if average_reward > target_reward:
+                        break
+        else:
+            break
+
+        # モデルの保存
+        torch.save(model, weight_file_name)
+
+        plt.xlabel("epoch")
+        plt.ylabel("reward")
+        plt.savefig("reward.png")
+        plt.show()
+
+        # エクセルの保存
+        is_file = os.path.isfile("reward.xlsx")
+        if not is_file:
+            wb = openpyxl.Workbook()
+            wb.save("reward.xlsx")
+            
+        wb = openpyxl.load_workbook("reward.xlsx")
+        ws_rewards = wb.create_sheet(index=0, title="average rewards")
+        ws_rewards.cell(1, 1).value = "average rewards"
+        for i in range(len(record_reward)):
+            ws_rewards.cell(i+2, 1).value = record_reward[i]
+        wb.save("reward.xlsx")
+        print("finish")                                                                                                    
+
 
     # step_interval += time_step
     # if step_interval >= 0.1:
