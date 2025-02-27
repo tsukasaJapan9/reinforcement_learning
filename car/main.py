@@ -76,6 +76,7 @@ print("--------------------")
 # -------------------------------------
 # 車の制御方法
 # -------------------------------------
+# ラジアン
 steer_list = [
     -math.radians(90),
     -math.radians(45),
@@ -84,6 +85,7 @@ steer_list = [
     math.radians(90),
 ]
 
+# m/s
 velocuty_list = [
     -20,
     0,
@@ -181,13 +183,19 @@ def decide_action(output):
     prop = output.detach().numpy()
     one_hot = torch.zeros([NUM_ACTIONS])
 
+    # モデルのoutput(prop)が確率になっているため、確率を重みとして行動をランダムに選択
     action = np.random.choice(range(NUM_ACTIONS), p=prop)
     one_hot[action] = 1
 
+    # 行動を選択
     steer, vel = ACTION_LIST[action]
-    steer *= np.deg2rad(steer_step)
+    # steer *= np.deg2rad(steer_step)
     action = dict()
+
+    # radian
     action["steer"] = np.round(steer, decimals=2)
+
+    # m/s
     action["vel"] = np.round(vel, decimals=2)
 
     return action, one_hot
@@ -307,54 +315,85 @@ while True:
 
     # 0.1秒ごとに学習
     if step_interval >= 0.1:
-        if epoch < epochs:
-            if episode < episodes:
-                # print(f"Episode: {episode} / {episodes}")
-                # 車の速度を取得
+        if epoch < epochs:  # max 3000エポック
+            if episode < episodes:  # 1 epoch = 10 episodes
+                # -------------------------------------
+                # 車の速度計算
+                # -------------------------------------
                 pos_prev = pos
+                # 現在位置の取得
                 pos, _ = p.getBasePositionAndOrientation(racecar)
+                # 前回からの移動距離
                 dx = np.sqrt(
                     (pos[0] - pos_prev[0])**2 + (pos[1] - pos_prev[1])**2
                 )
-
-                # ネットワークへの入力を準備する
-                # LiDARの距離
-                distances = lidar.detection(racecar, hokuyoJoint)
-                distances = [np.round(d, decimals=2) for d in distances]
                 # 車の速度
                 v = np.round(dx / update_step, decimals=2)
 
+                # print(f"{dx=}, {v=}")
+
+                # -------------------------------------
+                # LiDARの距離
+                # -------------------------------------
+                distances = lidar.detection(racecar, hokuyoJoint)
+                distances = [np.round(d, decimals=2) for d in distances]
+                
+                # -------------------------------------
+                # ネットワークに入力
+                # -------------------------------------
                 # テンソルに変換
                 distances_tr = torch.tensor(distances).float().to(my_device)
                 v_tr = torch.tensor(np.array([v])).float().to(my_device)
 
                 input = torch.cat([distances_tr, v_tr])
+                # print("------")
+                # print(f"{distances_tr=}")
+                # print(f"{v_tr=}")
+                # print(f"{input=}")
 
                 # 行動を決定する
+                # input=torch.Size([11]), output=torch.Size([25])
                 output = model(input)
                 output = output.cpu()
+                # action = (streer, velocity)
+                # one_hot = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, ...]
                 action, one_hot = decide_action(output)
 
+                # -------------------------------------
+                # 車両の状態を取得
+                # -------------------------------------
                 # タイヤの回転速度を取得
+                # rv=np.float64(60.0)
                 _, rv, _, _ = [
                     np.round(n, decimals=2) for n in p.getJointState(racecar, 2)
                 ]
 
                 # 角速度を取得
+                # 車両のオイラー角度を取得
                 qua = p.getBasePositionAndOrientation(racecar)[1]
+                # クォーターニオンのz成分
                 euler_z = p.getEulerFromQuaternion(qua)[2]
                 angle_vel = euler_z / update_step
 
+                # -------------------------------------
+                # 報酬の計算
+                # -------------------------------------
                 reward = set_reward(distances, rv, angle_vel)
 
+                # -------------------------------------
                 # 車の制御
+                # -------------------------------------
                 control_velocity(racecar, wheel_links, action["vel"])
                 control_steer(racecar, streer_links, action["steer"])
 
+                # -------------------------------------
+                # エピソードの終了判定
+                # -------------------------------------
                 contact = p.getContactPoints(racecar, simple_map)
-
+                # 障害物にぶつかる、または最大ステップ数に達した場合はエピソード終了
                 if contact or len(experiences) >= max_number_of_steps-1:
                     racecar = end_episode(racecar)
+                    # rewardを減点
                     if contact:
                         reward += collision_reward
                     else:
@@ -370,6 +409,7 @@ while True:
 
                     episode += 1
 
+                # エピソードを進める上での1stepの情報を保存
                 step_dict = {}
                 step_dict["state"] = distances
                 step_dict["output"] = output
@@ -379,11 +419,14 @@ while True:
 
                 experiences.append(step_dict)
 
+                # 1エピソード間の情報を保存。エピソードが終了したらリセットされる
                 policy_list[step] = step_dict["output"] @ step_dict["one_hot"]
                 reward_list[step] = step_dict["reward"]
 
                 step += 1
                 step_interval = 0
+
+                # エピソードのループ
             else:
                 # エピソード終了
                 epoch += 1
@@ -398,40 +441,37 @@ while True:
                         pre_rewards = pre_rewards.unsqueeze(1)
 
                     if rewards.nansum(dim=1).mean() > 0:
-                        # print(f"{rewards.nansum(dim=1).mean()=}")
-                        # print(f"{pre_rewards.nansum(dim=1).mean()=}")
                         reward_increase_rate = (rewards.nansum(dim=1).mean() - pre_rewards.nansum(dim=1).mean()) / rewards.nansum(dim=1).mean() * 100
-                        print(f"Epoch: {epoch}, Average reward: {average_reward}, Increase rate: {reward_increase_rate}")
                     else:
                         reward_increase_rate = (rewards.nansum(dim=1).mean() - pre_rewards.nansum(dim=1).mean()) / -rewards.nansum(dim=1).mean() * 100
-                        print(f"Epoch: {epoch}, Average reward: {average_reward}")
-                    pre_rewards = rewards
+                    print(f"Epoch: {epoch}, Average reward: {average_reward}, Increase rate: {reward_increase_rate}")
+                pre_rewards = rewards
 
-                    # グラフ
-                    graph_x.append(epoch)
-                    graph_y.append(rewards.nansum())
-                    plt.plot(graph_x, graph_y)
+                # グラフ
+                graph_x.append(epoch)
+                graph_y.append(rewards.nansum())
+                plt.plot(graph_x, graph_y)
 
-                    update_policy(rewards, policies, steps, optimaizer)
+                update_policy(rewards, policies, steps, optimaizer)
 
-                    # エクセル
-                    record_reward.append(float(rewards.nansum(dim=1).mean()))
+                # エクセル
+                record_reward.append(float(rewards.nansum(dim=1).mean()))
 
-                    # 初期化
-                    experiences = []
-                    rewards = tensor([])
-                    policies = tensor([])
-                    steps = tensor([])
-                    policy_list = tensor([np.nan]*max_number_of_steps)
-                    reward_list = tensor([np.nan]*max_number_of_steps)
+                # 初期化
+                experiences = []
+                rewards = tensor([])
+                policies = tensor([])
+                steps = tensor([])
+                policy_list = tensor([np.nan]*max_number_of_steps)
+                reward_list = tensor([np.nan]*max_number_of_steps)
 
-                    episode = 0
+                episode = 0
 
-                    if reward_increase_rate == 0:
-                        break
+                if reward_increase_rate == 0:
+                    break
 
-                    if average_reward > target_reward:
-                        break
+                if average_reward > target_reward:
+                    break
         else:
             break
 
