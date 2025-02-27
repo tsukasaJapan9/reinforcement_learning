@@ -398,8 +398,8 @@ while True:
                         pre_rewards = pre_rewards.unsqueeze(1)
 
                     if rewards.nansum(dim=1).mean() > 0:
-                        print(f"{rewards.nansum(dim=1).mean()=}")
-                        print(f"{pre_rewards.nansum(dim=1).mean()=}")
+                        # print(f"{rewards.nansum(dim=1).mean()=}")
+                        # print(f"{pre_rewards.nansum(dim=1).mean()=}")
                         reward_increase_rate = (rewards.nansum(dim=1).mean() - pre_rewards.nansum(dim=1).mean()) / rewards.nansum(dim=1).mean() * 100
                         print(f"Epoch: {epoch}, Average reward: {average_reward}, Increase rate: {reward_increase_rate}")
                     else:
