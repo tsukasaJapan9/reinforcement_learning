@@ -112,9 +112,9 @@ distances = []
 def set_camera(_racecar):
     focus_pos, _ = p.getBasePositionAndOrientation(_racecar)
     p.resetDebugVisualizerCamera(
-        cameraDistance=3,
+        cameraDistance=4,
         cameraYaw=-90,
-        cameraPitch=-70,
+        cameraPitch=-89,
         cameraTargetPosition=focus_pos,
     )
 
@@ -159,7 +159,9 @@ class NeuralNetwork(nn.Module):
         )
 
     def forward(self, x):
-        return F.softmax(self.seq(x), dim=0)
+        # 本のユーザレビューより
+        # return F.softmax(self.seq(x), dim=0)
+        return F.softmax(torch.nan_to_num(self.seq(x)), dim=0)
 
 
 my_device = device("cuda" if cuda.is_available() else "cpu")
@@ -342,10 +344,10 @@ while True:
                 # ネットワークに入力
                 # -------------------------------------
                 # テンソルに変換
-                distances_tr = torch.tensor(distances).float().to(my_device)
-                v_tr = torch.tensor(np.array([v])).float().to(my_device)
+                distances_tr = torch.tensor(distances).float()
+                v_tr = torch.tensor(np.array([v])).float()
 
-                input = torch.cat([distances_tr, v_tr])
+                input = torch.cat([distances_tr, v_tr]).to(my_device)
                 # print("------")
                 # print(f"{distances_tr=}")
                 # print(f"{v_tr=}")
